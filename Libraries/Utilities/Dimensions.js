@@ -11,11 +11,30 @@
  */
 'use strict';
 
-var NativeModules = require('NativeModules');
+var UIManager = require('UIManager');
 
 var invariant = require('invariant');
 
-var dimensions = NativeModules.UIManager.Dimensions;
+var dimensions = UIManager.Dimensions;
+
+// We calculate the window dimensions in JS so that we don't encounter loss of
+// precision in transferring the dimensions (which could be non-integers) over
+// the bridge.
+if (dimensions && dimensions.windowPhysicalPixels) {
+  // parse/stringify => Clone hack
+  dimensions = JSON.parse(JSON.stringify(dimensions));
+
+  var windowPhysicalPixels = dimensions.windowPhysicalPixels;
+  dimensions.window = {
+    width: windowPhysicalPixels.width / windowPhysicalPixels.scale,
+    height: windowPhysicalPixels.height / windowPhysicalPixels.scale,
+    scale: windowPhysicalPixels.scale,
+    fontScale: windowPhysicalPixels.fontScale,
+  };
+
+  // delete so no callers rely on this existing
+  delete dimensions.windowPhysicalPixels;
+}
 
 class Dimensions {
   /**

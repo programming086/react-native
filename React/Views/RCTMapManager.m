@@ -10,43 +10,18 @@
 #import "RCTMapManager.h"
 
 #import "RCTBridge.h"
+#import "RCTConvert+CoreLocation.h"
+#import "RCTConvert+MapKit.h"
 #import "RCTEventDispatcher.h"
 #import "RCTMap.h"
+#import "RCTUtils.h"
 #import "UIView+React.h"
+#import "RCTMapAnnotation.h"
+#import "RCTMapOverlay.h"
 
-@implementation RCTConvert(CoreLocation)
+#import <MapKit/MapKit.h>
 
-+ (CLLocationCoordinate2D)CLLocationCoordinate2D:(id)json
-{
-  json = [self NSDictionary:json];
-  return (CLLocationCoordinate2D){
-    [self double:json[@"latitude"]],
-    [self double:json[@"longitude"]]
-  };
-}
-
-@end
-
-@implementation RCTConvert(MapKit)
-
-+ (MKCoordinateSpan)MKCoordinateSpan:(id)json
-{
-  json = [self NSDictionary:json];
-  return (MKCoordinateSpan){
-    [self double:json[@"latitudeDelta"]],
-    [self double:json[@"longitudeDelta"]]
-  };
-}
-
-+ (MKCoordinateRegion)MKCoordinateRegion:(id)json
-{
-  return (MKCoordinateRegion){
-    [self CLLocationCoordinate2D:json],
-    [self MKCoordinateSpan:json]
-  };
-}
-
-@end
+static NSString *const RCTMapViewKey = @"MapView";
 
 @interface RCTMapManager() <MKMapViewDelegate>
 
@@ -54,14 +29,18 @@
 
 @implementation RCTMapManager
 
+RCT_EXPORT_MODULE()
+
 - (UIView *)view
 {
-  RCTMap *map = [[RCTMap alloc] init];
+  RCTMap *map = [RCTMap new];
   map.delegate = self;
   return map;
 }
 
 RCT_EXPORT_VIEW_PROPERTY(showsUserLocation, BOOL)
+RCT_EXPORT_VIEW_PROPERTY(showsPointsOfInterest, BOOL)
+RCT_EXPORT_VIEW_PROPERTY(showsCompass, BOOL)
 RCT_EXPORT_VIEW_PROPERTY(zoomEnabled, BOOL)
 RCT_EXPORT_VIEW_PROPERTY(rotateEnabled, BOOL)
 RCT_EXPORT_VIEW_PROPERTY(pitchEnabled, BOOL)
@@ -69,9 +48,127 @@ RCT_EXPORT_VIEW_PROPERTY(scrollEnabled, BOOL)
 RCT_EXPORT_VIEW_PROPERTY(maxDelta, CGFloat)
 RCT_EXPORT_VIEW_PROPERTY(minDelta, CGFloat)
 RCT_EXPORT_VIEW_PROPERTY(legalLabelInsets, UIEdgeInsets)
-RCT_EXPORT_VIEW_PROPERTY(region, MKCoordinateRegion)
+RCT_EXPORT_VIEW_PROPERTY(mapType, MKMapType)
+RCT_EXPORT_VIEW_PROPERTY(annotations, RCTMapAnnotationArray)
+RCT_EXPORT_VIEW_PROPERTY(overlays, RCTMapOverlayArray)
+RCT_EXPORT_VIEW_PROPERTY(onChange, RCTBubblingEventBlock)
+RCT_EXPORT_VIEW_PROPERTY(onPress, RCTBubblingEventBlock)
+RCT_CUSTOM_VIEW_PROPERTY(region, MKCoordinateRegion, RCTMap)
+{
+  [view setRegion:json ? [RCTConvert MKCoordinateRegion:json] : defaultView.region animated:YES];
+}
+
+- (NSDictionary<NSString *, id> *)constantsToExport
+{
+  return @{
+    @"PinColors": @{
+      @"RED": RCTColorToHexString([MKPinAnnotationView redPinColor].CGColor),
+      @"GREEN": RCTColorToHexString([MKPinAnnotationView greenPinColor].CGColor),
+      @"PURPLE": RCTColorToHexString([MKPinAnnotationView purplePinColor].CGColor),
+    }
+  };
+}
 
 #pragma mark MKMapViewDelegate
+
+- (void)mapView:(RCTMap *)mapView didSelectAnnotationView:(MKAnnotationView *)view
+{
+  if (mapView.onPress && [view.annotation isKindOfClass:[RCTMapAnnotation class]]) {
+
+    RCTMapAnnotation *annotation = (RCTMapAnnotation *)view.annotation;
+    mapView.onPress(@{
+      @"action": @"annotation-click",
+      @"annotation": @{
+        @"id": annotation.identifier,
+        @"title": annotation.title ?: @"",
+        @"subtitle": annotation.subtitle ?: @"",
+        @"latitude": @(annotation.coordinate.latitude),
+        @"longitude": @(annotation.coordinate.longitude)
+      }
+    });
+  }
+}
+
+- (MKAnnotationView *)mapView:(__unused MKMapView *)mapView viewForAnnotation:(RCTMapAnnotation *)annotation
+{
+  if (![annotation isKindOfClass:[RCTMapAnnotation class]]) {
+    return nil;
+  }
+
+  MKAnnotationView *annotationView;
+  if (annotation.image) {
+    if (annotation.tintColor) {
+
+      NSString *const reuseIdentifier = @"RCTImageViewAnnotation";
+      NSInteger imageViewTag = 99;
+      annotationView = [mapView dequeueReusableAnnotationViewWithIdentifier:reuseIdentifier];
+      if (!annotationView) {
+        annotationView = [[MKAnnotationView alloc] initWithAnnotation:annotation reuseIdentifier:reuseIdentifier];
+        UIImageView *imageView = [UIImageView new];
+        imageView.tag = imageViewTag;
+        [annotationView addSubview:imageView];
+      }
+
+      UIImageView *imageView = (UIImageView *)[annotationView viewWithTag:imageViewTag];
+      imageView.image = annotation.image;
+      imageView.tintColor = annotation.tintColor;
+      [imageView sizeToFit];
+      imageView.center = CGPointZero;
+
+    } else {
+
+      NSString *reuseIdentifier = NSStringFromClass([MKAnnotationView class]);
+      annotationView = [mapView dequeueReusableAnnotationViewWithIdentifier:reuseIdentifier] ?: [[MKAnnotationView alloc] initWithAnnotation:annotation reuseIdentifier:reuseIdentifier];
+      annotationView.image = annotation.image;
+    }
+
+  } else {
+
+    NSString *reuseIdentifier = NSStringFromClass([MKPinAnnotationView class]);
+    annotationView = [mapView dequeueReusableAnnotationViewWithIdentifier:reuseIdentifier] ?: [[MKPinAnnotationView alloc] initWithAnnotation:annotation reuseIdentifier:reuseIdentifier];
+    ((MKPinAnnotationView *)annotationView).animatesDrop = annotation.animateDrop;
+    ((MKPinAnnotationView *)annotationView).pinTintColor = annotation.tintColor ?: [MKPinAnnotationView redPinColor];
+  }
+  annotationView.canShowCallout = true;
+
+  annotationView.leftCalloutAccessoryView = nil;
+  if (annotation.hasLeftCallout) {
+    annotationView.leftCalloutAccessoryView = [UIButton buttonWithType:UIButtonTypeDetailDisclosure];
+  }
+
+  annotationView.rightCalloutAccessoryView = nil;
+  if (annotation.hasRightCallout) {
+    annotationView.rightCalloutAccessoryView = [UIButton buttonWithType:UIButtonTypeDetailDisclosure];
+  }
+
+  return annotationView;
+}
+
+- (MKOverlayRenderer *)mapView:(__unused MKMapView *)mapView rendererForOverlay:(RCTMapOverlay *)overlay
+{
+  if ([overlay isKindOfClass:[RCTMapOverlay class]]) {
+    MKPolylineRenderer *polylineRenderer = [[MKPolylineRenderer alloc] initWithPolyline:overlay];
+    polylineRenderer.strokeColor = overlay.strokeColor;
+    polylineRenderer.lineWidth = overlay.lineWidth;
+    return polylineRenderer;
+  } else {
+    return nil;
+  }
+}
+
+- (void)mapView:(RCTMap *)mapView annotationView:(MKAnnotationView *)view calloutAccessoryControlTapped:(UIControl *)control
+{
+  if (mapView.onPress) {
+
+    // Pass to js
+    RCTMapAnnotation *annotation = (RCTMapAnnotation *)view.annotation;
+    mapView.onPress(@{
+      @"side": (control == view.leftCalloutAccessoryView) ? @"left" : @"right",
+      @"action": @"callout-click",
+      @"annotationId": annotation.identifier
+    });
+  }
+}
 
 - (void)mapView:(RCTMap *)mapView didUpdateUserLocation:(MKUserLocation *)location
 {
@@ -87,24 +184,36 @@ RCT_EXPORT_VIEW_PROPERTY(region, MKCoordinateRegion)
   }
 }
 
-- (void)mapView:(RCTMap *)mapView regionWillChangeAnimated:(BOOL)animated
+- (void)mapView:(RCTMap *)mapView regionWillChangeAnimated:(__unused BOOL)animated
 {
   [self _regionChanged:mapView];
 
   mapView.regionChangeObserveTimer = [NSTimer timerWithTimeInterval:RCTMapRegionChangeObserveInterval
                                                              target:self
                                                            selector:@selector(_onTick:)
-                                                           userInfo:@{ @"mapView": mapView }
+                                                           userInfo:@{ RCTMapViewKey: mapView }
                                                             repeats:YES];
+
   [[NSRunLoop mainRunLoop] addTimer:mapView.regionChangeObserveTimer forMode:NSRunLoopCommonModes];
 }
 
-- (void)mapView:(RCTMap *)mapView regionDidChangeAnimated:(BOOL)animated
+- (void)mapView:(RCTMap *)mapView regionDidChangeAnimated:(__unused BOOL)animated
 {
   [mapView.regionChangeObserveTimer invalidate];
   mapView.regionChangeObserveTimer = nil;
 
   [self _regionChanged:mapView];
+
+  // Don't send region did change events until map has
+  // started rendering, as these won't represent the final location
+  if (mapView.hasStartedRendering) {
+    [self _emitRegionChangeEvent:mapView continuous:NO];
+  };
+}
+
+- (void)mapViewWillStartRenderingMap:(RCTMap *)mapView
+{
+  mapView.hasStartedRendering = YES;
   [self _emitRegionChangeEvent:mapView continuous:NO];
 }
 
@@ -112,7 +221,7 @@ RCT_EXPORT_VIEW_PROPERTY(region, MKCoordinateRegion)
 
 - (void)_onTick:(NSTimer *)timer
 {
-  [self _regionChanged:timer.userInfo[@"mapView"]];
+  [self _regionChanged:timer.userInfo[RCTMapViewKey]];
 }
 
 - (void)_regionChanged:(RCTMap *)mapView
@@ -120,13 +229,17 @@ RCT_EXPORT_VIEW_PROPERTY(region, MKCoordinateRegion)
   BOOL needZoom = NO;
   CGFloat newLongitudeDelta = 0.0f;
   MKCoordinateRegion region = mapView.region;
-  // On iOS 7, it's possible that we observe invalid locations during initialization of the map.
-  // Filter those out.
+
+  // On iOS 7, it's possible that we observe invalid locations during
+  // initialization of the map. Filter those out.
   if (!CLLocationCoordinate2DIsValid(region.center)) {
     return;
   }
-  // Calculation on float is not 100% accurate. If user zoom to max/min and then move, it's likely the map will auto zoom to max/min from time to time.
-  // So let's try to make map zoom back to 99% max or 101% min so that there are some buffer that moving the map won't constantly hitting the max/min bound.
+
+  // Calculation on float is not 100% accurate. If user zoom to max/min and then
+  // move, it's likely the map will auto zoom to max/min from time to time.
+  // So let's try to make map zoom back to 99% max or 101% min so that there is
+  // some buffer, and moving the map won't constantly hit the max/min bound.
   if (mapView.maxDelta > FLT_EPSILON && region.span.longitudeDelta > mapView.maxDelta) {
     needZoom = YES;
     newLongitudeDelta = mapView.maxDelta * (1 - RCTMapZoomBoundBuffer);
@@ -146,24 +259,22 @@ RCT_EXPORT_VIEW_PROPERTY(region, MKCoordinateRegion)
 
 - (void)_emitRegionChangeEvent:(RCTMap *)mapView continuous:(BOOL)continuous
 {
-  MKCoordinateRegion region = mapView.region;
-  if (!CLLocationCoordinate2DIsValid(region.center)) {
-    return;
-  }
-
-#define FLUSH_NAN(value) (isnan(value) ? 0 : value)
-
-  NSDictionary *event = @{
-    @"target": [mapView reactTag],
-    @"continuous": @(continuous),
-    @"region": @{
-      @"latitude": @(FLUSH_NAN(region.center.latitude)),
-      @"longitude": @(FLUSH_NAN(region.center.longitude)),
-      @"latitudeDelta": @(FLUSH_NAN(region.span.latitudeDelta)),
-      @"longitudeDelta": @(FLUSH_NAN(region.span.longitudeDelta)),
+  if (mapView.onChange) {
+    MKCoordinateRegion region = mapView.region;
+    if (!CLLocationCoordinate2DIsValid(region.center)) {
+      return;
     }
-  };
-  [self.bridge.eventDispatcher sendInputEventWithName:@"topChange" body:event];
+
+    mapView.onChange(@{
+      @"continuous": @(continuous),
+      @"region": @{
+        @"latitude": @(RCTZeroIfNaN(region.center.latitude)),
+        @"longitude": @(RCTZeroIfNaN(region.center.longitude)),
+        @"latitudeDelta": @(RCTZeroIfNaN(region.span.latitudeDelta)),
+        @"longitudeDelta": @(RCTZeroIfNaN(region.span.longitudeDelta)),
+      }
+    });
+  }
 }
 
 @end

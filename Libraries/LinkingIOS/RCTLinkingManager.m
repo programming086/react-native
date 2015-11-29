@@ -11,6 +11,7 @@
 
 #import "RCTBridge.h"
 #import "RCTEventDispatcher.h"
+#import "RCTUtils.h"
 
 NSString *const RCTOpenURLNotification = @"RCTOpenURLNotification";
 
@@ -18,15 +19,22 @@ NSString *const RCTOpenURLNotification = @"RCTOpenURLNotification";
 
 @synthesize bridge = _bridge;
 
-- (instancetype)init
+RCT_EXPORT_MODULE()
+
+- (void)setBridge:(RCTBridge *)bridge
 {
-  if ((self = [super init])) {
-    [[NSNotificationCenter defaultCenter] addObserver:self
-                                             selector:@selector(handleOpenURLNotification:)
-                                                 name:RCTOpenURLNotification
-                                               object:nil];
-  }
-  return self;
+  _bridge = bridge;
+
+  [[NSNotificationCenter defaultCenter] addObserver:self
+                                           selector:@selector(handleOpenURLNotification:)
+                                               name:RCTOpenURLNotification
+                                             object:nil];
+}
+
+- (NSDictionary<NSString *, id> *)constantsToExport
+{
+  NSURL *initialURL = _bridge.launchOptions[UIApplicationLaunchOptionsURLKey];
+  return @{@"initialURL": RCTNullIfNil(initialURL.absoluteString)};
 }
 
 - (void)dealloc
@@ -35,11 +43,11 @@ NSString *const RCTOpenURLNotification = @"RCTOpenURLNotification";
 }
 
 + (BOOL)application:(UIApplication *)application
-            openURL:(NSURL *)url
+            openURL:(NSURL *)URL
   sourceApplication:(NSString *)sourceApplication
          annotation:(id)annotation
 {
-  NSDictionary *payload = @{@"url": [url absoluteString]};
+  NSDictionary<NSString *, id> *payload = @{@"url": URL.absoluteString};
   [[NSNotificationCenter defaultCenter] postNotificationName:RCTOpenURLNotification
                                                       object:self
                                                     userInfo:payload];
@@ -49,30 +57,27 @@ NSString *const RCTOpenURLNotification = @"RCTOpenURLNotification";
 - (void)handleOpenURLNotification:(NSNotification *)notification
 {
   [_bridge.eventDispatcher sendDeviceEventWithName:@"openURL"
-                                              body:[notification userInfo]];
+                                              body:notification.userInfo];
 }
 
-- (void)openURL:(NSString *)url
+RCT_EXPORT_METHOD(openURL:(NSURL *)URL)
 {
-  RCT_EXPORT();
-
-  [[UIApplication sharedApplication] openURL:[NSURL URLWithString:url]];
+  // Doesn't really matter what thread we call this on since it exits the app
+  [RCTSharedApplication() openURL:URL];
 }
 
-- (void)canOpenURL:(NSString *)url
-          callback:(RCTResponseSenderBlock)callback
+RCT_EXPORT_METHOD(canOpenURL:(NSURL *)URL
+                  callback:(RCTResponseSenderBlock)callback)
 {
-  RCT_EXPORT();
+  if (RCTRunningInAppExtension()) {
+    // Technically Today widgets can open urls, but supporting that would require
+    // a reference to the NSExtensionContext
+    callback(@[@(NO)]);
+  }
 
-  BOOL supported = [[UIApplication sharedApplication] canOpenURL:[NSURL URLWithString:url]];
-  callback(@[@(supported)]);
-}
-
-- (NSDictionary *)constantsToExport
-{
-  return @{
-    @"initialURL": [[_bridge.launchOptions objectForKey:UIApplicationLaunchOptionsURLKey] absoluteString] ?: [NSNull null]
-  };
+  // This can be expensive, so we deliberately don't call on main thread
+  BOOL canOpen = [RCTSharedApplication() canOpenURL:URL];
+  callback(@[@(canOpen)]);
 }
 
 @end

@@ -11,22 +11,21 @@
  */
 'use strict';
 
+var ActivityIndicatorIOS = require('ActivityIndicatorIOS');
 var EdgeInsetsPropType = require('EdgeInsetsPropType');
 var React = require('React');
-var ReactIOSViewAttributes = require('ReactIOSViewAttributes');
 var StyleSheet = require('StyleSheet');
+var Text = require('Text');
 var View = require('View');
 
-var createReactIOSNativeComponentClass = require('createReactIOSNativeComponentClass');
+var invariant = require('invariant');
 var keyMirror = require('keyMirror');
-var insetsDiffer = require('insetsDiffer');
-var merge = require('merge');
+var requireNativeComponent = require('requireNativeComponent');
 
 var PropTypes = React.PropTypes;
 var RCTWebViewManager = require('NativeModules').WebViewManager;
 
-var invariant = require('invariant');
-
+var BGWASH = 'rgba(255,255,255,0.8)';
 var RCT_WEBVIEW_REF = 'webview';
 
 var WebViewState = keyMirror({
@@ -44,6 +43,8 @@ var NavigationType = {
   other: RCTWebViewManager.NavigationType.Other,
 };
 
+var JSNavigationScheme = RCTWebViewManager.JSNavigationScheme;
+
 type ErrorEvent = {
   domain: any;
   code: any;
@@ -52,21 +53,88 @@ type ErrorEvent = {
 
 type Event = Object;
 
+var defaultRenderLoading = () => (
+  <View style={styles.loadingView}>
+    <ActivityIndicatorIOS />
+  </View>
+);
+var defaultRenderError = (errorDomain, errorCode, errorDesc) => (
+  <View style={styles.errorContainer}>
+    <Text style={styles.errorTextTitle}>
+      Error loading page
+    </Text>
+    <Text style={styles.errorText}>
+      {'Domain: ' + errorDomain}
+    </Text>
+    <Text style={styles.errorText}>
+      {'Error Code: ' + errorCode}
+    </Text>
+    <Text style={styles.errorText}>
+      {'Description: ' + errorDesc}
+    </Text>
+  </View>
+);
+
+/**
+ * Renders a native WebView.
+ *
+ * Note that WebView is only supported on iOS for now,
+ * see https://facebook.github.io/react-native/docs/known-issues.html
+ */
 var WebView = React.createClass({
   statics: {
+    JSNavigationScheme: JSNavigationScheme,
     NavigationType: NavigationType,
   },
 
   propTypes: {
-    renderError: PropTypes.func.isRequired, // view to show if there's an error
-    renderLoading: PropTypes.func.isRequired, // loading indicator to show
-    url: PropTypes.string.isRequired,
+    ...View.propTypes,
+    url: PropTypes.string,
+    html: PropTypes.string,
+    renderError: PropTypes.func, // view to show if there's an error
+    renderLoading: PropTypes.func, // loading indicator to show
+    bounces: PropTypes.bool,
+    scrollEnabled: PropTypes.bool,
     automaticallyAdjustContentInsets: PropTypes.bool,
-    shouldInjectAJAXHandler: PropTypes.bool,
     contentInset: EdgeInsetsPropType,
     onNavigationStateChange: PropTypes.func,
     startInLoadingState: PropTypes.bool, // force WebView to show loadingView on first load
     style: View.propTypes.style,
+
+    /**
+     * Used for android only, JS is enabled by default for WebView on iOS
+     * @platform android
+     */
+    javaScriptEnabledAndroid: PropTypes.bool,
+
+    /**
+     * Sets the JS to be injected when the webpage loads.
+     */
+    injectedJavaScript: PropTypes.string,
+
+    /**
+     * Sets whether the webpage scales to fit the view and the user can change the scale.
+     * @platform ios
+     */
+    scalesPageToFit: PropTypes.bool,
+
+    /**
+     * Allows custom handling of any webview requests by a JS handler. Return true
+     * or false from this method to continue loading the request.
+     * @platform ios
+     */
+    onShouldStartLoadWithRequest: PropTypes.func,
+
+    /**
+     * Determines whether HTML5 videos play inline or use the native full-screen
+     * controller.
+     * default value `false`
+     * **NOTE** : "In order for video to play inline, not only does this
+     * property need to be set to true, but the video element in the HTML
+     * document must also include the webkit-playsinline attribute."
+     * @platform ios
+     */
+    allowsInlineMediaPlayback: PropTypes.bool,
   },
 
   getInitialState: function() {
@@ -86,28 +154,37 @@ var WebView = React.createClass({
   render: function() {
     var otherView = null;
 
-   if (this.state.viewState === WebViewState.LOADING) {
-      otherView = this.props.renderLoading();
+    if (this.state.viewState === WebViewState.LOADING) {
+      otherView = (this.props.renderLoading || defaultRenderLoading)();
     } else if (this.state.viewState === WebViewState.ERROR) {
       var errorEvent = this.state.lastErrorEvent;
       invariant(
         errorEvent != null,
         'lastErrorEvent expected to be non-null'
       );
-      otherView = this.props.renderError(
+      otherView = (this.props.renderError || defaultRenderError)(
         errorEvent.domain,
         errorEvent.code,
-        errorEvent.description);
+        errorEvent.description
+      );
     } else if (this.state.viewState !== WebViewState.IDLE) {
-      console.error('RCTWebView invalid state encountered: ' + this.state.loading);
+      console.error(
+        'RCTWebView invalid state encountered: ' + this.state.loading
+      );
     }
 
-    var webViewStyles = [styles.container, this.props.style];
+    var webViewStyles = [styles.container, styles.webView, this.props.style];
     if (this.state.viewState === WebViewState.LOADING ||
       this.state.viewState === WebViewState.ERROR) {
       // if we're in either LOADING or ERROR states, don't show the webView
       webViewStyles.push(styles.hidden);
     }
+
+    var onShouldStartLoadWithRequest = this.props.onShouldStartLoadWithRequest && ((event: Event) => {
+      var shouldStart = this.props.onShouldStartLoadWithRequest &&
+        this.props.onShouldStartLoadWithRequest(event.nativeEvent);
+      RCTWebViewManager.startLoadWithResult(!!shouldStart, event.nativeEvent.lockIdentifier);
+    });
 
     var webView =
       <RCTWebView
@@ -115,12 +192,18 @@ var WebView = React.createClass({
         key="webViewKey"
         style={webViewStyles}
         url={this.props.url}
-        shouldInjectAJAXHandler={this.props.shouldInjectAJAXHandler}
+        html={this.props.html}
+        injectedJavaScript={this.props.injectedJavaScript}
+        bounces={this.props.bounces}
+        scrollEnabled={this.props.scrollEnabled}
         contentInset={this.props.contentInset}
         automaticallyAdjustContentInsets={this.props.automaticallyAdjustContentInsets}
         onLoadingStart={this.onLoadingStart}
         onLoadingFinish={this.onLoadingFinish}
         onLoadingError={this.onLoadingError}
+        onShouldStartLoadWithRequest={onShouldStartLoadWithRequest}
+        scalesPageToFit={this.props.scalesPageToFit}
+        allowsInlineMediaPlayback={this.props.allowsInlineMediaPlayback}
       />;
 
     return (
@@ -132,15 +215,15 @@ var WebView = React.createClass({
   },
 
   goForward: function() {
-    RCTWebViewManager.goForward(this.getWebWiewHandle());
+    RCTWebViewManager.goForward(this.getWebViewHandle());
   },
 
   goBack: function() {
-    RCTWebViewManager.goBack(this.getWebWiewHandle());
+    RCTWebViewManager.goBack(this.getWebViewHandle());
   },
 
   reload: function() {
-    RCTWebViewManager.reload(this.getWebWiewHandle());
+    RCTWebViewManager.reload(this.getWebViewHandle());
   },
 
   /**
@@ -153,8 +236,8 @@ var WebView = React.createClass({
     }
   },
 
-  getWebWiewHandle: function(): any {
-    return this.refs[RCT_WEBVIEW_REF].getNodeHandle();
+  getWebViewHandle: function(): any {
+    return React.findNodeHandle(this.refs[RCT_WEBVIEW_REF]);
   },
 
   onLoadingStart: function(event: Event) {
@@ -163,7 +246,7 @@ var WebView = React.createClass({
 
   onLoadingError: function(event: Event) {
     event.persist(); // persist this event because we need to store it
-    console.error("encountered an error loading page", event.nativeEvent);
+    console.warn('Encountered an error loading page', event.nativeEvent);
 
     this.setState({
       lastErrorEvent: event.nativeEvent,
@@ -179,24 +262,47 @@ var WebView = React.createClass({
   },
 });
 
-var RCTWebView = createReactIOSNativeComponentClass({
-  validAttributes: merge(ReactIOSViewAttributes.UIView, {
-    url: true,
-    contentInset: {diff: insetsDiffer},
-    automaticallyAdjustContentInsets: true,
-    shouldInjectAJAXHandler: true
-  }),
-  uiViewClassName: 'RCTWebView',
+var RCTWebView = requireNativeComponent('RCTWebView', WebView, {
+  nativeOnly: {
+    onLoadingStart: true,
+    onLoadingError: true,
+    onLoadingFinish: true,
+  },
 });
 
 var styles = StyleSheet.create({
   container: {
     flex: 1,
   },
+  errorContainer: {
+    flex: 1,
+    justifyContent: 'center',
+    alignItems: 'center',
+    backgroundColor: BGWASH,
+  },
+  errorText: {
+    fontSize: 14,
+    textAlign: 'center',
+    marginBottom: 2,
+  },
+  errorTextTitle: {
+    fontSize: 15,
+    fontWeight: '500',
+    marginBottom: 10,
+  },
   hidden: {
     height: 0,
     flex: 0, // disable 'flex:1' when hiding a View
   },
+  loadingView: {
+    backgroundColor: BGWASH,
+    flex: 1,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  webView: {
+    backgroundColor: '#ffffff',
+  }
 });
 
 module.exports = WebView;

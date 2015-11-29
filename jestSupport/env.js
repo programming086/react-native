@@ -8,6 +8,5 @@
  */
 'use strict';
 
-global.setImmediate = global.setImmediate || function(fn) {
-  return setTimeout(fn, 0);
-};
+require('../packager/react-packager/src/Resolver/polyfills/babelHelpers.js');
+global.__DEV__ = true;

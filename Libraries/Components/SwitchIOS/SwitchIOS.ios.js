@@ -16,11 +16,10 @@
 var NativeMethodsMixin = require('NativeMethodsMixin');
 var PropTypes = require('ReactPropTypes');
 var React = require('React');
-var ReactIOSViewAttributes = require('ReactIOSViewAttributes');
 var StyleSheet = require('StyleSheet');
+var View = require('View');
 
-var createReactIOSNativeComponentClass = require('createReactIOSNativeComponentClass');
-var merge = require('merge');
+var requireNativeComponent = require('requireNativeComponent');
 
 var SWITCH = 'switch';
 
@@ -42,6 +41,7 @@ var SwitchIOS = React.createClass({
   mixins: [NativeMethodsMixin],
 
   propTypes: {
+    ...View.propTypes,
     /**
      * The value of the switch, if true the switch will be turned on.
      * Default value is false.
@@ -83,25 +83,25 @@ var SwitchIOS = React.createClass({
   },
 
   _onChange: function(event: Event) {
-    this.props.onChange && this.props.onChange(event);
-    this.props.onValueChange && this.props.onValueChange(event.nativeEvent.value);
-
     // The underlying switch might have changed, but we're controlled,
     // and so want to ensure it represents our value.
-    this.refs[SWITCH].setNativeProps({on: this.props.value});
+    this.refs[SWITCH].setNativeProps({value: this.props.value});
+
+    if (this.props.value === event.nativeEvent.value || this.props.disabled) {
+      return;
+    }
+
+    this.props.onChange && this.props.onChange(event);
+    this.props.onValueChange && this.props.onValueChange(event.nativeEvent.value);
   },
 
   render: function() {
     return (
       <RCTSwitch
+        {...this.props}
         ref={SWITCH}
-        style={[styles.rkSwitch, this.props.style]}
-        enabled={!this.props.disabled}
-        on={this.props.value}
         onChange={this._onChange}
-        onTintColor={this.props.onTintColor}
-        thumbTintColor={this.props.thumbTintColor}
-        tintColor={this.props.tintColor}
+        style={[styles.rkSwitch, this.props.style]}
       />
     );
   }
@@ -114,17 +114,8 @@ var styles = StyleSheet.create({
   },
 });
 
-var rkSwitchAttributes = merge(ReactIOSViewAttributes.UIView, {
-  onTintColor: true,
-  tintColor: true,
-  thumbTintColor: true,
-  on: true,
-  enabled: true,
-});
-
-var RCTSwitch = createReactIOSNativeComponentClass({
-  validAttributes: rkSwitchAttributes,
-  uiViewClassName: 'RCTSwitch',
+var RCTSwitch = requireNativeComponent('RCTSwitch', SwitchIOS, {
+  nativeOnly: { onChange: true }
 });
 
 module.exports = SwitchIOS;

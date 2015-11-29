@@ -19,6 +19,8 @@ var invariant = require('invariant');
 var keyMirror = require('keyMirror');
 var setImmediate = require('setImmediate');
 
+type Handle = number;
+
 var _emitter = new EventEmitter();
 var _interactionSet = new Set();
 var _addInteractionSet = new Set();
@@ -71,19 +73,20 @@ var InteractionManager = {
   /**
    * Schedule a function to run after all interactions have completed.
    */
-  runAfterInteractions(callback: Function) {
-    invariant(
-      typeof callback === 'function',
-      'Must specify a function to schedule.'
-    );
-    scheduleUpdate();
-    _queue.push(callback);
+  runAfterInteractions(callback: ?Function): Promise {
+    return new Promise(resolve => {
+      scheduleUpdate();
+      if (callback) {
+        _queue.push(callback);
+      }
+      _queue.push(resolve);
+    });
   },
 
   /**
    * Notify manager that an interaction has started.
    */
-  createInteractionHandle(): number {
+  createInteractionHandle(): Handle {
     scheduleUpdate();
     var handle = ++_inc;
     _addInteractionSet.add(handle);
@@ -93,7 +96,7 @@ var InteractionManager = {
   /**
    * Notify manager that an interaction has completed.
    */
-  clearInteractionHandle(handle: number) {
+  clearInteractionHandle(handle: Handle) {
     invariant(
       !!handle,
       'Must provide a handle to clear.'
@@ -119,6 +122,8 @@ function scheduleUpdate() {
  * Notify listeners, process queue, etc
  */
 function processUpdate() {
+  _nextUpdateHandle = null;
+
   var interactionCount = _interactionSet.size;
   _addInteractionSet.forEach(handle =>
     _interactionSet.add(handle)
@@ -138,12 +143,13 @@ function processUpdate() {
 
   // process the queue regardless of a transition
   if (nextInteractionCount === 0) {
-    _queue.forEach(callback => {
+    var queue = _queue;
+    _queue = [];
+    queue.forEach(callback => {
       ErrorUtils.applyWithGuard(callback);
     });
-    _queue = [];
   }
-  _nextUpdateHandle = null;
+
   _addInteractionSet.clear();
   _deleteInteractionSet.clear();
 }
